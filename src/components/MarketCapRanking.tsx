@@ -280,7 +280,7 @@ export default function MarketCapRanking({
       {/* シンプルなヘッダー（余計な切替ボタンを撤去） */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-3.5">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-lg sm:text-xl font-extrabold text-white">
               時価総額 伸び率ランキング
             </h2>
@@ -289,6 +289,11 @@ export default function MarketCapRanking({
               {selectedSector === "ALL" ? "全16業種" : selectedSector}（
               {targetItems.length}社）
             </span>
+            {isLoading && (
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-bold text-emerald-300 animate-pulse">
+                実データ同期中...
+              </span>
+            )}
           </div>
           <p className="mt-0.5 text-xs text-slate-400">
             行クリックで個別推移を表示、右端の「＋」で比較チャートへ追加できます

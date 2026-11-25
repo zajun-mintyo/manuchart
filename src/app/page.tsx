@@ -24,6 +24,10 @@ import {
   Minimize2,
   ChevronDown,
   ChevronUp,
+  HelpCircle,
+  Database,
+  Filter,
+  Factory,
 } from "lucide-react";
 import {
   PRIME_MANUFACTURING_COMPANIES,
@@ -168,10 +172,14 @@ export default function ManuChartPage() {
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<
     ProductCategoryId[]
   >(["auto", "ship", "aircraft", "semicon", "machinetool"]);
-  // 生産品目インデックス時系列データ（APIから最新値が返ってきた場合の上書き用）
-  const [apiCategorySeriesList, setApiCategorySeriesList] = useState<
-    CategoryIndexSeries[] | null
-  >(null);
+  // 生産品目インデックス時系列データ（APIから最新値が返ってきた場合の上書き用：期間付きで整合管理）
+  const [apiCategorySeriesState, setApiCategorySeriesState] = useState<{
+    range: TimeframeKey;
+    categories: CategoryIndexSeries[];
+  } | null>(null);
+  // 「？」ボタンによる抽出条件ガイドモーダルの開閉状態
+  const [isExtractionGuideOpen, setIsExtractionGuideOpen] =
+    useState<boolean>(false);
   // 比較対象銘柄コードリスト（初期値: トヨタ自動車 7203 と 本田技研工業 7267）
   const [compareCodes, setCompareCodes] = useState<string[]>(["7203", "7267"]);
   // 比較チャートのY軸モード（品目比較がデフォルトのため初期値: "changePercent" = 変動率%）
@@ -197,9 +205,10 @@ export default function ManuChartPage() {
   const [compareDataMap, setCompareDataMap] = useState<
     Record<string, StockApiResponse>
   >({});
-  const [apiRankingItems, setApiRankingItems] = useState<
-    MarketCapRankingItem[] | null
-  >(null);
+  const [apiRankingState, setApiRankingState] = useState<{
+    range: TimeframeKey;
+    items: MarketCapRankingItem[];
+  } | null>(null);
   const [liveSnapshotMap, setLiveSnapshotMap] = useState<
     Record<
       string,
@@ -225,18 +234,53 @@ export default function ManuChartPage() {
   }, [apiPrimaryData, selectedCode, selectedRange]);
 
   const categorySeriesList = useMemo(() => {
-    if (apiCategorySeriesList && apiCategorySeriesList.length > 0) {
-      return apiCategorySeriesList;
+    if (
+      apiCategorySeriesState &&
+      apiCategorySeriesState.range === selectedRange &&
+      apiCategorySeriesState.categories.length > 0
+    ) {
+      return apiCategorySeriesState.categories;
     }
     return buildInstantCategoryIndices(selectedRange, compareDataMap);
-  }, [apiCategorySeriesList, selectedRange, compareDataMap]);
+  }, [apiCategorySeriesState, selectedRange, compareDataMap]);
 
   const rankingItems = useMemo(() => {
-    if (apiRankingItems && apiRankingItems.length > 0) {
-      return apiRankingItems;
+    const baseItems =
+      apiRankingState &&
+      apiRankingState.range === selectedRange &&
+      apiRankingState.items.length > 0
+        ? apiRankingState.items
+        : buildInstantRankingItems(selectedRange, compareDataMap);
+
+    // 企業比較・個別推移で取得済みの同一期間実データがあれば、ランキング値にも即座に反映して完全一致を保証する
+    const mergedOverrideMap: Record<string, StockApiResponse> = {};
+    for (const [code, res] of Object.entries(compareDataMap)) {
+      if (res && res.range === selectedRange) {
+        mergedOverrideMap[code] = res;
+      }
     }
-    return buildInstantRankingItems(selectedRange, compareDataMap);
-  }, [apiRankingItems, selectedRange, compareDataMap]);
+    if (apiPrimaryData && apiPrimaryData.range === selectedRange) {
+      mergedOverrideMap[apiPrimaryData.code] = apiPrimaryData;
+    }
+
+    if (Object.keys(mergedOverrideMap).length === 0) {
+      return baseItems;
+    }
+
+    return baseItems.map((item) => {
+      const latest = mergedOverrideMap[item.code];
+      if (!latest) return item;
+      return {
+        ...item,
+        startMarketCapOku: latest.meta.startMarketCapOku,
+        latestMarketCapOku: latest.meta.latestMarketCapOku,
+        changeMarketCapOku: latest.meta.periodMarketCapChangeOku,
+        growthPercent: latest.meta.periodMarketCapChangePercent,
+        latestPrice: latest.meta.latestPrice,
+        dayChangePercent: latest.meta.changePercent,
+      };
+    });
+  }, [apiRankingState, selectedRange, compareDataMap, apiPrimaryData]);
 
   const [isLoadingPrimary, setIsLoadingPrimary] = useState<boolean>(false);
   const [isLoadingCompare, setIsLoadingCompare] = useState<boolean>(false);
@@ -259,6 +303,16 @@ export default function ManuChartPage() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  // Escキーで抽出対象ガイドモーダルを閉じる
+  useEffect(() => {
+    if (!isExtractionGuideOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsExtractionGuideOpen(false);
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isExtractionGuideOpen]);
 
   // LocalStorageからの復元
   useEffect(() => {
@@ -444,7 +498,7 @@ export default function ManuChartPage() {
         );
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data: MarketCapRankingResponse = await res.json();
-        setApiRankingItems(data.items);
+        setApiRankingState({ range: data.range, items: data.items });
 
         setLiveSnapshotMap((prev) => {
           const next = { ...prev };
@@ -481,7 +535,10 @@ export default function ManuChartPage() {
         );
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data: CategoryIndexResponse = await res.json();
-        setApiCategorySeriesList(data.categories);
+        setApiCategorySeriesState({
+          range: data.range,
+          categories: data.categories,
+        });
       } catch (err) {
         console.error("Failed to fetch category indices:", err);
       }
@@ -923,6 +980,15 @@ export default function ManuChartPage() {
                 <h1 className="text-base font-extrabold tracking-tight text-white sm:text-lg">
                   ManuChart
                 </h1>
+                <button
+                  type="button"
+                  onClick={() => setIsExtractionGuideOpen(true)}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-slate-700 bg-slate-900 text-slate-300 hover:border-emerald-400/70 hover:bg-emerald-500/15 hover:text-emerald-300 transition cursor-pointer"
+                  title="上場企業の中から何を抽出しているか確認する"
+                  aria-label="抽出対象・データ仕様を表示"
+                >
+                  <HelpCircle className="h-3.5 w-3.5" />
+                </button>
                 <span className="hidden sm:inline-block rounded-full border border-slate-700 bg-slate-900 px-2 py-0.5 text-[10px] font-medium text-slate-400">
                   東証プライム製造業 {PRIME_MANUFACTURING_COMPANIES.length}社
                 </span>
@@ -1807,11 +1873,183 @@ export default function ManuChartPage() {
                 setComparisonLensMode("custom_company");
                 setCompareCodesBatch(codes, true);
               }}
-              isLoading={isRefreshing}
+              isLoading={isLoadingRanking || isRefreshing}
             />
           )}
         </section>
       </main>
+
+      {/* ================= 「？」ボタン：上場企業からの抽出条件・データ仕様モーダル ================= */}
+      {isExtractionGuideOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+          onClick={() => setIsExtractionGuideOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="extraction-guide-title"
+        >
+          <div
+            className="relative flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-700/90 bg-slate-900 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* モーダルヘッダー */}
+            <div className="flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-950/90 px-5 py-4">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-400">
+                  <HelpCircle className="h-4.5 w-4.5" />
+                </div>
+                <div>
+                  <h2
+                    id="extraction-guide-title"
+                    className="text-sm sm:text-base font-extrabold text-white"
+                  >
+                    ManuChart 収録企業の抽出条件・データ仕様
+                  </h2>
+                  <p className="text-[11px] text-slate-400">
+                    国内上場企業の中から、どのような基準で銘柄を抽出しているかをご案内します
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsExtractionGuideOpen(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-600 hover:text-white transition cursor-pointer"
+                aria-label="閉じる"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* モーダル本文 */}
+            <div className="overflow-y-auto px-5 py-4 space-y-5 text-xs text-slate-300">
+              {/* 1. 抽出条件サマリー */}
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3">
+                  <div className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
+                    対象市場
+                  </div>
+                  <div className="mt-1 text-sm font-extrabold text-white">
+                    東証プライム市場
+                  </div>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    国内上場企業のうち流動性・ガバナンス基準を満たすプライム上場企業を対象
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-3">
+                  <div className="text-[10px] font-bold text-sky-400 uppercase tracking-wider">
+                    対象セクター
+                  </div>
+                  <div className="mt-1 text-sm font-extrabold text-white">
+                    製造業 全16業種
+                  </div>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    東証33業種から製造業16業種のみを抽出（金融・商社・通信・小売・サービス等は除外）
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+                  <div className="text-[10px] font-bold text-amber-400 uppercase tracking-wider">
+                    収録銘柄数
+                  </div>
+                  <div className="mt-1 text-sm font-extrabold text-white">
+                    厳選 {PRIME_MANUFACTURING_COMPANIES.length}社 / {PRODUCT_CATEGORIES.length}品目
+                  </div>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    各業種の時価総額上位・主力メーカー＋世界シェア上位のニッチトップ企業を抽出
+                  </p>
+                </div>
+              </div>
+
+              {/* 2. 具体的な抽出ルール */}
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-extrabold text-white">
+                  <Filter className="h-3.5 w-3.5 text-emerald-400" />
+                  <span>上場企業からの抽出ルール</span>
+                </div>
+                <ul className="space-y-1.5 text-[12px] leading-relaxed text-slate-300 list-disc pl-4">
+                  <li>
+                    <span className="font-bold text-white">市場区分フィルタ：</span>
+                    東京証券取引所「プライム市場」に上場している国内製造業から抽出しています（スタンダード・グロース市場や非製造業は対象外）。
+                  </li>
+                  <li>
+                    <span className="font-bold text-white">主力・代表銘柄の選定：</span>
+                    各業種で時価総額・売上規模が大きい日本を代表するメーカー（トヨタ、ソニーG、日立、キーエンス、信越化学、日本電気など）を網羅しています。
+                  </li>
+                  <li>
+                    <span className="font-bold text-white">サプライチェーン＆ニッチトップ視点：</span>
+                    完成品メーカーだけでなく、半導体製造装置・電子部品・素材・工作機械・重電・光ファイバーなど、世界シェアの高い川上・川中の中核企業も含めています。
+                  </li>
+                </ul>
+              </div>
+
+              {/* 3. 東証16業種別の抽出社数内訳 */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-extrabold text-white">
+                    <Factory className="h-3.5 w-3.5 text-sky-400" />
+                    <span>
+                      東証16業種別の抽出内訳（計 {PRIME_MANUFACTURING_COMPANIES.length}社）
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-slate-400">
+                    クリックで該当業種に絞り込み
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                  {MANUFACTURING_SECTORS.map((sec) => {
+                    const count = sectorCounts[sec.name] || 0;
+                    return (
+                      <button
+                        key={sec.name}
+                        type="button"
+                        onClick={() => {
+                          setSectorFilter(sec.name);
+                          setIsSidebarOpen(true);
+                          setIsExtractionGuideOpen(false);
+                          showToast(`業種を「${sec.name}」（${count}社）で絞り込みました`);
+                        }}
+                        className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-950/80 px-2.5 py-2 text-left hover:border-emerald-500/50 hover:bg-slate-900 transition cursor-pointer"
+                      >
+                        <span className="truncate text-[11px] font-semibold text-slate-200">
+                          {sec.name}
+                        </span>
+                        <span className="ml-1.5 shrink-0 rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] font-bold text-emerald-300">
+                          {count}社
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* 4. データソースと伸び率整合性について */}
+              <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 space-y-1.5">
+                <div className="flex items-center gap-1.5 text-xs font-extrabold text-white">
+                  <Database className="h-3.5 w-3.5 text-amber-400" />
+                  <span>株価・時価総額・伸び率データの取得仕様</span>
+                </div>
+                <p className="text-[11px] leading-relaxed text-slate-400">
+                  全 {PRIME_MANUFACTURING_COMPANIES.length}社の時系列株価を Yahoo Finance API から取得し、各社の基準発行済株式数係数を用いて時価総額および期間伸び率を算出しています。
+                  「個別推移」「品目・企業比較」「伸び率ランキング」のすべてで同一の実データキャッシュ（10分間保持／「更新」ボタンで即時再取得）を参照するため、画面間で数値が一致します。
+                </p>
+              </div>
+            </div>
+
+            {/* モーダルフッター */}
+            <div className="flex items-center justify-end border-t border-slate-800 bg-slate-950/90 px-5 py-3">
+              <button
+                type="button"
+                onClick={() => setIsExtractionGuideOpen(false)}
+                className="rounded-xl bg-emerald-500 px-4 py-1.5 text-xs font-extrabold text-slate-950 hover:bg-emerald-400 transition cursor-pointer"
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
